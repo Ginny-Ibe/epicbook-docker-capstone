@@ -1,2 +1,11 @@
 node_modules
 .DS_Store
+.env
+logs/
+backups/
+# Terraform state, variables and cache (contain IPs / account details)
+terraform/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+tfplan

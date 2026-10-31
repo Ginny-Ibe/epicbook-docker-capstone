@@ -1,0 +1,16 @@
+# Secrets
+.env
+.env.*
+
+# Git and editor files
+.git
+.gitignore
+.DS_Store
+.vscode
+
+# Docker files themselves
+Dockerfile*
+.dockerignore
+
+# Not needed in the static image
+*.md

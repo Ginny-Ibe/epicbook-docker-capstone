@@ -1,0 +1,22 @@
+# Dependencies are installed fresh inside the image by npm ci
+node_modules
+npm-debug.log*
+
+# Secrets and local config
+.env
+.env.*
+
+# Git and editor files
+.git
+.gitignore
+.DS_Store
+.vscode
+
+# Docker files themselves
+Dockerfile*
+.dockerignore
+
+# Dev-only tooling
+.eslintrc.json
+.eslintignore
+*.md
