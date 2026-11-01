@@ -127,6 +127,9 @@ jobs:
           echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
           docker compose pull frontend backend
           docker compose up -d --no-build --wait --wait-timeout 180
+          # nginx.conf is bind-mounted, so a changed config is NOT picked up by
+          # "up" alone (image/settings unchanged). Recreate the proxy every deploy.
+          docker compose up -d --no-build --no-deps --force-recreate --wait --wait-timeout 60 reverse-proxy
           docker compose ps --format 'table {{.Service}}\t{{.Image}}\t{{.Status}}'
           EOF
 
@@ -159,3 +162,7 @@ jobs:
           [ "$code" = "200" ]
           curl -sf "http://$HOST/" | grep -q "Deployed by Ginny Ibe"
           echo "Home page OK: EpicBook is serving through the reverse proxy"
+          # Static assets come from the frontend container via the proxy;
+          # catches a proxy -> frontend mismatch (e.g. 502) that /health misses
+          curl -sf -o /dev/null "http://$HOST/assets/css/style.css"
+          echo "Assets OK: frontend is reachable through the reverse proxy"
