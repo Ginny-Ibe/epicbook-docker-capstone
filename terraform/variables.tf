@@ -59,3 +59,9 @@ variable "github_repo" {
   type        = string
   default     = "Ginny-Ibe/epicbook-docker-capstone"
 }
+
+variable "github_repo_with_ids" {
+  description = "Same repository in GitHub's OIDC subject format with immutable IDs (owner@id/repo@id)"
+  type        = string
+  default     = "Ginny-Ibe@291217124/epicbook-docker-capstone@1440812036"
+}

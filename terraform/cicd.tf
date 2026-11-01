@@ -29,7 +29,12 @@ data "aws_iam_policy_document" "ci_trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repo}:environment:production"]
+      # GitHub now puts immutable IDs in the subject (owner@id/repo@id), so a
+      # deleted and re-created repo with the same name cannot assume this role.
+      values = [
+        "repo:${var.github_repo}:environment:production",
+        "repo:${var.github_repo_with_ids}:environment:production",
+      ]
     }
   }
 }
