@@ -1,0 +1,149 @@
+name: Build, push and deploy EpicBook
+
+on:
+  push:
+    branches: [capstone/epicbook-docker]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "proxy/**"
+      - "docker-compose.yml"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+# Never run two deploys to the same VM at once
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  IMAGE_PREFIX: ghcr.io/ginny-ibe/
+
+jobs:
+  # ---------------------------------------------------------
+  # 1. Build both images and push them to GHCR, tagged with the commit SHA
+  # ---------------------------------------------------------
+  build-push:
+    name: Build & push (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [backend, frontend]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image
+        run: |
+          docker build \
+            --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            -t ${IMAGE_PREFIX}epicbook-${{ matrix.service }}:${{ github.sha }} \
+            -t ${IMAGE_PREFIX}epicbook-${{ matrix.service }}:latest \
+            ./${{ matrix.service }}
+          docker image ls ${IMAGE_PREFIX}epicbook-${{ matrix.service }}
+
+      - name: Push image
+        run: docker push --all-tags ${IMAGE_PREFIX}epicbook-${{ matrix.service }}
+
+  # ---------------------------------------------------------
+  # 2. Deploy to the EC2 VM (waits for manual approval on "production")
+  # ---------------------------------------------------------
+  deploy:
+    name: Deploy to EC2
+    needs: build-push
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+      id-token: write # OIDC token for AWS, no stored AWS keys
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # SSH is locked to the admin IP; open it to this runner only, for this run only
+      - name: Allow this runner's IP on port 22
+        id: sg
+        run: |
+          ip=$(curl -s https://checkip.amazonaws.com)
+          aws ec2 authorize-security-group-ingress \
+            --group-id "${{ secrets.SG_ID }}" \
+            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${ip}/32,Description=github-actions-${{ github.run_id }}}]"
+          echo "cidr=${ip}/32" >> "$GITHUB_OUTPUT"
+
+      - name: Set up SSH key and pinned host key
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "${{ secrets.EC2_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      - name: Pull new images and restart the stack
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          SHA: ${{ github.sha }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes ubuntu@"$HOST" bash -s <<EOF
+          set -euo pipefail
+          cd ~/epicbook-docker-capstone
+
+          # Same commit as the images: compose file and nginx.conf stay in sync
+          git fetch --quiet origin
+          git checkout --quiet --detach "$SHA"
+
+          # Point compose at the GHCR images for this commit (.env is never in Git)
+          sed -i '/^IMAGE_PREFIX=/d;/^IMAGE_TAG=/d' .env
+          printf 'IMAGE_PREFIX=%s\nIMAGE_TAG=%s\n' "$IMAGE_PREFIX" "$SHA" >> .env
+
+          trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT
+          echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker compose pull frontend backend
+          docker compose up -d --no-build --wait --wait-timeout 180
+          docker compose ps --format 'table {{.Service}}\t{{.Image}}\t{{.Status}}'
+          EOF
+
+      - name: Remove this runner's IP from port 22
+        if: always() && steps.sg.outputs.cidr != ''
+        run: |
+          aws ec2 revoke-security-group-ingress \
+            --group-id "${{ secrets.SG_ID }}" \
+            --protocol tcp --port 22 --cidr "${{ steps.sg.outputs.cidr }}"
+          rm -f ~/.ssh/deploy_key
+
+  # ---------------------------------------------------------
+  # 3. Verify through the public reverse proxy
+  # ---------------------------------------------------------
+  verify:
+    name: Verify public endpoints
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Health check and home page
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://$HOST/health")
+            echo "attempt $i: /health -> $code"
+            [ "$code" = "200" ] && break
+            sleep 5
+          done
+          [ "$code" = "200" ]
+          curl -sf "http://$HOST/" | grep -q "Deployed by Ginny Ibe"
+          echo "Home page OK: EpicBook is serving through the reverse proxy"

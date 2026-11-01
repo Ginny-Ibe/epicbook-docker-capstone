@@ -1,0 +1,2 @@
+# Copy to terraform.tfvars and set your own public IP (curl https://checkip.amazonaws.com)
+allowed_ssh_cidr = "x.x.x.x/32"

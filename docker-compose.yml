@@ -32,7 +32,9 @@ services:
 
   frontend:
     build: ./frontend
-    image: epicbook-frontend:1.0
+    # Local: epicbook-frontend:1.0. CI/CD sets IMAGE_PREFIX/IMAGE_TAG in .env on the VM
+    # so it runs ghcr.io/ginny-ibe/epicbook-frontend:<git-sha> instead.
+    image: ${IMAGE_PREFIX:-}epicbook-frontend:${IMAGE_TAG:-1.0}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/assets/css/style.css"]
       interval: 10s
@@ -46,7 +48,9 @@ services:
 
   backend:
     build: ./backend
-    image: epicbook-backend:1.0
+    image: ${IMAGE_PREFIX:-}epicbook-backend:${IMAGE_TAG:-1.0}
+    # Tiny init as PID 1 forwards SIGTERM to node, so stops are graceful (no 10s wait / exit 137)
+    init: true
     environment:
       NODE_ENV: production
       PORT: "8080"
