@@ -16,8 +16,14 @@ concurrency:
   group: deploy-production
   cancel-in-progress: false
 
+# Not secret: these identify resources but grant nothing on their own.
+# The only real secret is EC2_SSH_KEY (repository secret).
 env:
   IMAGE_PREFIX: ghcr.io/ginny-ibe/
+  AWS_ROLE_ARN: arn:aws:iam::521681798359:role/epicbook-ci-deploy
+  SG_ID: sg-00bbb0a58deb6b166
+  EC2_HOST: 3.92.87.219
+  EC2_KNOWN_HOSTS: "3.92.87.219 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILmHu1PaMoFfASaZ67Bnzr41mLF+KbBjlsZiLor7hjG/"
 
 jobs:
   # ---------------------------------------------------------
@@ -72,7 +78,7 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v5
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: us-east-1
 
       # SSH is locked to the admin IP; open it to this runner only, for this run only
@@ -81,20 +87,26 @@ jobs:
         run: |
           ip=$(curl -s https://checkip.amazonaws.com)
           aws ec2 authorize-security-group-ingress \
-            --group-id "${{ secrets.SG_ID }}" \
+            --group-id "$SG_ID" \
             --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${ip}/32,Description=github-actions-${{ github.run_id }}}]"
           echo "cidr=${ip}/32" >> "$GITHUB_OUTPUT"
 
       - name: Set up SSH key and pinned host key
         run: |
           install -m 700 -d ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          if [ -z "$EC2_SSH_KEY" ]; then
+            echo "::error::Repository secret EC2_SSH_KEY is missing (Settings > Secrets and variables > Actions)"
+            exit 1
+          fi
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          echo "${{ secrets.EC2_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          echo "$EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
 
       - name: Pull new images and restart the stack
         env:
-          HOST: ${{ secrets.EC2_HOST }}
+          HOST: ${{ env.EC2_HOST }}
           SHA: ${{ github.sha }}
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
@@ -122,7 +134,7 @@ jobs:
         if: always() && steps.sg.outputs.cidr != ''
         run: |
           aws ec2 revoke-security-group-ingress \
-            --group-id "${{ secrets.SG_ID }}" \
+            --group-id "$SG_ID" \
             --protocol tcp --port 22 --cidr "${{ steps.sg.outputs.cidr }}"
           rm -f ~/.ssh/deploy_key
 
@@ -136,7 +148,7 @@ jobs:
     steps:
       - name: Health check and home page
         env:
-          HOST: ${{ secrets.EC2_HOST }}
+          HOST: ${{ env.EC2_HOST }}
         run: |
           for i in $(seq 1 10); do
             code=$(curl -s -o /dev/null -w '%{http_code}' "http://$HOST/health")
